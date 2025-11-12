@@ -1,18 +1,17 @@
-# main.py
 import os
 import logging
-import threading
-import asyncio
-from flask import Flask
-
+from flask import Flask, request
 from aiogram import Bot, Dispatcher, types
-from aiogram.utils import executor
+import sqlite3  # Пример для хранения данных
+import csv
+from io import StringIO
+import asyncio
 
-# Logging
+# Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Token from env
+# Get token from environment
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     logger.error("BOT_TOKEN not set in environment")
@@ -22,47 +21,160 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 
-# --- Handlers (add your commands here) ---
+# --- Database setup (example with SQLite) ---
+DATABASE = 'words.db'
+
+def init_db():
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS words
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER NOT NULL,
+                  word TEXT NOT NULL,
+                  translation TEXT NOT NULL,
+                  added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  due_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    conn.commit()
+    conn.close()
+
+def add_word_to_db(user_id, word, translation):
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    # Устанавливаем due_date на текущее время (или через определенный интервал для повторения)
+    c.execute("INSERT INTO words (user_id, word, translation, due_date) VALUES (?, ?, ?, ?)",
+              (user_id, word, translation, '2025-11-12 14:00:00')) # Пример даты
+    conn.commit()
+    conn.close()
+
+def get_last_words(user_id, limit=20):
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute("SELECT word, translation, added_date FROM words WHERE user_id = ? ORDER BY added_date DESC LIMIT ?",
+              (user_id, limit))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def get_due_count(user_id):
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM words WHERE user_id = ? AND due_date <= datetime('now')", (user_id,))
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
+def get_all_words_for_export(user_id):
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute("SELECT word, translation, added_date FROM words WHERE user_id = ?", (user_id,))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+# Initialize database
+init_db()
+
+# --- Handlers ---
 @dp.message_handler(commands=["start"])
 async def cmd_start(message: types.Message):
-    await message.reply("👋 Привет! Бот запущен и работает!")
+    await message.reply("👋 Привет! Бот запущен и работает! Используйте /help для списка команд.")
 
 @dp.message_handler(commands=["help"])
 async def cmd_help(message: types.Message):
-    await message.reply("Список команд: /start /help /echo")
+    help_text = """
+Список команд:
+/add <слово> ; <перевод> — добавить пару (пример: /add apple; яблоко)
+/list — последние 20 слов
+/due — сколько карточек к повторению сейчас
+/quiz — начать тренировку
+/export — выгрузить все слова в CSV
+    """
+    await message.reply(help_text)
 
-@dp.message_handler(commands=["echo"])
-async def cmd_echo(message: types.Message):
-    # example: /echo hello -> replies "hello"
-    text = message.get_args()
-    if not text:
-        await message.reply("Usage: /echo <text>")
+@dp.message_handler(commands=["list"])
+async def cmd_list(message: types.Message):
+    user_id = message.from_user.id
+    words = get_last_words(user_id)
+    if words:
+        response_lines = ["Ваши последние слова:"]
+        for word, translation, date in words:
+            response_lines.append(f"{word} - {translation} (добавлено: {date})")
+        response = "\n".join(response_lines)
     else:
-        await message.reply(text)
+        response = "У вас пока нет сохраненных слов."
+    await message.reply(response)
 
-# Debug / catch-all echo handler to ensure messages reach bot
+@dp.message_handler(commands=["add"])
+async def cmd_add(message: types.Message):
+    args = message.get_args()
+    if not args or ';' not in args:
+        await message.reply("Неправильный формат. Используйте: /add <слово> ; <перевод>")
+        return
+
+    parts = args.split(';', 1)  # Разделить только по первому ';'
+    word = parts[0].strip()
+    translation = parts[1].strip()
+
+    if not word or not translation:
+        await message.reply("Слово и перевод не могут быть пустыми.")
+        return
+
+    user_id = message.from_user.id
+    add_word_to_db(user_id, word, translation)
+    await message.reply(f"Слово '{word}' с переводом '{translation}' добавлено!")
+
+@dp.message_handler(commands=["due"])
+async def cmd_due(message: types.Message):
+    user_id = message.from_user.id
+    count = get_due_count(user_id)
+    await message.reply(f"Количество карточек к повторению: {count}")
+
+@dp.message_handler(commands=["quiz"])
+async def cmd_quiz(message: types.Message):
+    # Заглушка для функции викторины
+    await message.reply("Функция викторины пока не реализована.")
+
+@dp.message_handler(commands=["export"])
+async def cmd_export(message: types.Message):
+    user_id = message.from_user.id
+    words = get_all_words_for_export(user_id)
+
+    if not words:
+        await message.reply("Нет слов для экспорта.")
+        return
+
+    # Создаем CSV в памяти
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Слово", "Перевод", "Дата добавления"])  # Заголовки
+    writer.writerows(words)
+
+    # Получаем строку CSV
+    csv_content = output.getvalue()
+    output.close()
+
+    # Отправляем CSV-файл
+    csv_buffer = StringIO(csv_content)
+    csv_buffer.seek(0)
+    # aiogram не отправляет StringIO напрямую, нужно в BytesIO или сохранить временный файл
+    # Проще всего создать BytesIO из строки
+    from io import BytesIO
+    csv_bytes = BytesIO(csv_content.encode('utf-8'))
+    csv_bytes.name = 'export.csv'
+
+    await message.reply_document(document=types.InputFile(csv_bytes, filename='export.csv'))
+    csv_bytes.close()
+
+
+# Debug / catch-all echo handler (remove or modify once all commands are implemented)
 @dp.message_handler()
 async def fallback(message: types.Message):
-    logger.info("Fallback handler got: %s", message.text)
-    # comment out next line if you don't want auto-echo
-    await message.reply(f"Эхо (debug): {message.text}")
+    # logger.info("Fallback handler got: %s", message.text) # Логирование можно отключить, если оно мешает
+    # Убираем echo, чтобы не мешало командам
+    # await message.reply(f"Эхо (debug): {message.text}")
+    pass # Или добавьте логику для обработки неизвестных команд
 
-# --- Polling starter (runs in thread with its own event loop) ---
-def start_polling():
-    # create & set event loop for this thread
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    # executor.start_polling is blocking — run it in this thread's loop
-    # skip_updates=True to ignore backlog; change if needed
-    executor.start_polling(dp, skip_updates=True)
-
-def run_polling_in_thread():
-    th = threading.Thread(target=start_polling, name="aiogram-poller", daemon=True)
-    th.start()
-    logger.info("Started polling thread: %s", th.name)
-
-# --- Flask health server (so Render sees an open port) ---
+# --- Flask app for webhooks ---
 app = Flask(__name__)
 
 @app.route("/", methods=["GET"])
@@ -73,12 +185,28 @@ def index():
 def health():
     return {"status": "ok"}, 200
 
-if __name__ == "__main__":
-    # start polling thread BEFORE Flask, or either order is OK (polling in thread)
-    run_polling_in_thread()
+# Webhook endpoint
+@app.route(f"/bot{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    try:
+        # Create an Update object from the request data
+        update_data = request.get_json()
+        update = types.Update(**update_data)
 
-    # Run Flask on port from env (Render exposes $PORT)
+        # Process the update
+        # Use asyncio to run the async handler
+        # This is important for aiogram v2.x
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(dp.process_update(update))
+        loop.close()
+
+        return {"status": "ok"}, 200
+    except Exception as e:
+        logger.error(f"Error processing update: {e}")
+        return {"error": "Failed to process update"}, 500
+
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    # host=0.0.0.0 required for Render
     logger.info("Starting Flask on 0.0.0.0:%s", port)
     app.run(host="0.0.0.0", port=port)
