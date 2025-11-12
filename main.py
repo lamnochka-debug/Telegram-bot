@@ -76,6 +76,29 @@ def get_all_words_for_export(user_id):
     conn.close()
     return rows
 
+def delete_word_from_db(user_id, word_to_delete):
+    """Функция для удаления слова из базы данных для конкретного пользователя."""
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    # Удаляем только одну конкретную запись, соответствующую user_id и слову
+    c.execute("DELETE FROM words WHERE user_id = ? AND word = ?", (user_id, word_to_delete))
+    changes = c.rowcount # Количество изменённых строк
+    conn.commit()
+    conn.close()
+    return changes > 0 # Возвращаем True, если что-то удалили
+
+def edit_word_in_db(user_id, old_word, new_word, new_translation):
+    """Функция для редактирования слова и перевода в базе данных для конкретного пользователя."""
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    # Обновляем слово и перевод, если найдено старое слово для пользователя
+    c.execute("UPDATE words SET word = ?, translation = ? WHERE user_id = ? AND word = ?",
+              (new_word, new_translation, user_id, old_word))
+    changes = c.rowcount
+    conn.commit()
+    conn.close()
+    return changes > 0
+
 # Initialize database
 init_db()
 
@@ -93,6 +116,8 @@ async def cmd_help(message: types.Message):
 /due — сколько карточек к повторению сейчас
 /quiz — начать тренировку
 /export — выгрузить все слова в CSV
+/delete <слово> — удалить слово (пример: /delete apple)
+/edit <старое_слово> ; <новое_слово> ; <новый_перевод> — изменить слово и перевод (пример: /edit aple; apple; яблоко)
     """
     await message.reply(help_text)
 
@@ -165,6 +190,43 @@ async def cmd_export(message: types.Message):
 
     await message.reply_document(document=types.InputFile(csv_bytes, filename='export.csv'))
     csv_bytes.close()
+
+@dp.message_handler(commands=["delete"])
+async def cmd_delete(message: types.Message):
+    args = message.get_args()
+    if not args:
+        await message.reply("Неправильный формат. Используйте: /delete <слово>")
+        return
+
+    word_to_delete = args.strip()
+
+    user_id = message.from_user.id
+    if delete_word_from_db(user_id, word_to_delete):
+        await message.reply(f"Слово '{word_to_delete}' удалено.")
+    else:
+        await message.reply(f"Слово '{word_to_delete}' не найдено или не принадлежит вам.")
+
+@dp.message_handler(commands=["edit"])
+async def cmd_edit(message: types.Message):
+    args = message.get_args()
+    if not args or args.count(';') < 2:
+        await message.reply("Неправильный формат. Используйте: /edit <старое_слово> ; <новое_слово> ; <новый_перевод>")
+        return
+
+    parts = args.split(';', 2)  # Разделить только по первым двум ';'
+    old_word = parts[0].strip()
+    new_word = parts[1].strip()
+    new_translation = parts[2].strip()
+
+    if not old_word or not new_word or not new_translation:
+        await message.reply("Старое слово, новое слово и новый перевод не могут быть пустыми.")
+        return
+
+    user_id = message.from_user.id
+    if edit_word_in_db(user_id, old_word, new_word, new_translation):
+        await message.reply(f"Слово '{old_word}' обновлено до '{new_word}' с переводом '{new_translation}'.")
+    else:
+        await message.reply(f"Старое слово '{old_word}' не найдено или не принадлежит вам.")
 
 @dp.message_handler(commands=["echo"])
 async def cmd_echo(message: types.Message):
