@@ -1,0 +1,12 @@
+cat > .gitignore << 'EOF'
+__pycache__/
+*.py[cod]
+venv/
+.env
+.cache/
+node_modules/
+*.log
+Thumbs.db
+desktop.ini
+.DS_Store
+EOF
