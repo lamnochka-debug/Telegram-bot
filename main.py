@@ -2,10 +2,12 @@ import os
 import logging
 from flask import Flask, request
 from aiogram import Bot, Dispatcher, types
+from aiogram.contrib.fsm_storage.memory import MemoryStorage # Не обязательно, если не используете FSM
 import sqlite3  # Пример для хранения данных
 import csv
 from io import StringIO
 import asyncio
+from aiogram import Bot as aiogram_Bot # Импортируем Bot под другим именем, чтобы избежать конфликта с нашим экземпляром
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
@@ -19,7 +21,9 @@ if not BOT_TOKEN:
 
 # aiogram setup
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot)
+# Используем MemoryStorage для FSM, если планируете использовать состояния
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
 
 # --- Database setup (example with SQLite) ---
 DATABASE = 'words.db'
@@ -41,8 +45,9 @@ def add_word_to_db(user_id, word, translation):
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
     # Устанавливаем due_date на текущее время (или через определенный интервал для повторения)
-    c.execute("INSERT INTO words (user_id, word, translation, due_date) VALUES (?, ?, ?, ?)",
-              (user_id, word, translation, '2025-11-12 14:00:00')) # Пример даты
+    # Здесь упрощённый пример - сразу доступно для повторения
+    c.execute("INSERT INTO words (user_id, word, translation, due_date) VALUES (?, ?, ?, datetime('now'))",
+              (user_id, word, translation))
     conn.commit()
     conn.close()
 
@@ -154,10 +159,6 @@ async def cmd_export(message: types.Message):
     output.close()
 
     # Отправляем CSV-файл
-    csv_buffer = StringIO(csv_content)
-    csv_buffer.seek(0)
-    # aiogram не отправляет StringIO напрямую, нужно в BytesIO или сохранить временный файл
-    # Проще всего создать BytesIO из строки
     from io import BytesIO
     csv_bytes = BytesIO(csv_content.encode('utf-8'))
     csv_bytes.name = 'export.csv'
@@ -165,6 +166,14 @@ async def cmd_export(message: types.Message):
     await message.reply_document(document=types.InputFile(csv_bytes, filename='export.csv'))
     csv_bytes.close()
 
+@dp.message_handler(commands=["echo"])
+async def cmd_echo(message: types.Message):
+    # example: /echo hello -> replies "hello"
+    text = message.get_args()
+    if not text:
+        await message.reply("Usage: /echo <text>")
+    else:
+        await message.reply(text)
 
 # Debug / catch-all echo handler (remove or modify once all commands are implemented)
 @dp.message_handler()
@@ -193,9 +202,11 @@ def webhook():
         update_data = request.get_json()
         update = types.Update(**update_data)
 
+        # Set the current bot instance for aiogram context
+        aiogram_Bot.set_current(bot)
+
         # Process the update
         # Use asyncio to run the async handler
-        # This is important for aiogram v2.x
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(dp.process_update(update))
