@@ -3,7 +3,8 @@ import logging
 from flask import Flask, request
 from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.fsm_storage.memory import MemoryStorage # Не обязательно, если не используете FSM
-import sqlite3  # Пример для хранения данных
+import psycopg2 # Импортируем драйвер для PostgreSQL
+import psycopg2.extras # Для использования RealDictCursor
 import csv
 from io import StringIO
 import asyncio
@@ -19,88 +20,134 @@ if not BOT_TOKEN:
     logger.error("BOT_TOKEN not set in environment")
     raise SystemExit("BOT_TOKEN not set")
 
+# Get DATABASE_URL from environment (provided by Neon.tech)
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    logger.error("DATABASE_URL not set in environment")
+    raise SystemExit("DATABASE_URL not set")
+
 # aiogram setup
 bot = Bot(token=BOT_TOKEN)
 # Используем MemoryStorage для FSM, если планируете использовать состояния
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
-# --- Database setup (example with SQLite) ---
-DATABASE = 'words.db'
+# --- Database setup (example with PostgreSQL) ---
+# DATABASE_URL будет получен из переменной окружения
 
 def init_db():
-    conn = sqlite3.connect(DATABASE)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS words
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  user_id INTEGER NOT NULL,
-                  word TEXT NOT NULL,
-                  translation TEXT NOT NULL,
-                  added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  due_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    # Подключаемся к базе данных используя DATABASE_URL
+    # psycopg2 автоматически разберёт URL (например, postgresql://user:pass@host:port/dbname)
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
+
+    # Создаём таблицу, если она не существует
+    # Обратите внимание: 'id SERIAL PRIMARY KEY' в PostgreSQL эквивалентно 'id INTEGER PRIMARY KEY AUTOINCREMENT' в SQLite
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS words (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            word TEXT NOT NULL,
+            translation TEXT NOT NULL,
+            added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            due_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
     conn.commit()
+    cur.close()
     conn.close()
 
 def add_word_to_db(user_id, word, translation):
-    conn = sqlite3.connect(DATABASE)
-    c = conn.cursor()
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
     # Устанавливаем due_date на текущее время (или через определенный интервал для повторения)
     # Здесь упрощённый пример - сразу доступно для повторения
-    c.execute("INSERT INTO words (user_id, word, translation, due_date) VALUES (?, ?, ?, datetime('now'))",
-              (user_id, word, translation))
+    cur.execute(
+        "INSERT INTO words (user_id, word, translation, due_date) VALUES (%s, %s, %s, NOW());",
+        (user_id, word, translation)
+    )
     conn.commit()
+    cur.close()
     conn.close()
 
 def get_last_words(user_id, limit=20):
-    conn = sqlite3.connect(DATABASE)
-    c = conn.cursor()
-    c.execute("SELECT word, translation, added_date FROM words WHERE user_id = ? ORDER BY added_date DESC LIMIT ?",
-              (user_id, limit))
-    rows = c.fetchall()
+    conn = psycopg2.connect(DATABASE_URL)
+    # Используем RealDictCursor для получения результатов в виде словаря
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        "SELECT word, translation, added_date FROM words WHERE user_id = %s ORDER BY added_date DESC LIMIT %s;",
+        (user_id, limit)
+    )
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
-    return rows
+    # Преобразуем результаты из RealDictRow в обычные кортежи для совместимости с остальной частью кода
+    return [(row['word'], row['translation'], row['added_date']) for row in rows]
 
 def get_due_count(user_id):
-    conn = sqlite3.connect(DATABASE)
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM words WHERE user_id = ? AND due_date <= datetime('now')", (user_id,))
-    count = c.fetchone()[0]
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT COUNT(*) FROM words WHERE user_id = %s AND due_date <= NOW();",
+        (user_id,)
+    )
+    count = cur.fetchone()[0]
+    cur.close()
     conn.close()
     return count
 
 def get_all_words_for_export(user_id):
-    conn = sqlite3.connect(DATABASE)
-    c = conn.cursor()
-    c.execute("SELECT word, translation, added_date FROM words WHERE user_id = ?", (user_id,))
-    rows = c.fetchall()
+    conn = psycopg2.connect(DATABASE_URL)
+    # Используем RealDictCursor для получения результатов в виде словаря
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        "SELECT word, translation, added_date FROM words WHERE user_id = %s;",
+        (user_id,)
+    )
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
-    return rows
+    # Преобразуем результаты из RealDictRow в обычные кортежи
+    return [(row['word'], row['translation'], row['added_date']) for row in rows]
 
 def delete_word_from_db(user_id, word_to_delete):
     """Функция для удаления слова из базы данных для конкретного пользователя."""
-    conn = sqlite3.connect(DATABASE)
-    c = conn.cursor()
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
     # Удаляем только одну конкретную запись, соответствующую user_id и слову
-    c.execute("DELETE FROM words WHERE user_id = ? AND word = ?", (user_id, word_to_delete))
-    changes = c.rowcount # Количество изменённых строк
+    cur.execute("DELETE FROM words WHERE user_id = %s AND word = %s;", (user_id, word_to_delete))
+    changes = cur.rowcount # Количество изменённых строк
     conn.commit()
+    cur.close()
     conn.close()
     return changes > 0 # Возвращаем True, если что-то удалили
 
 def edit_word_in_db(user_id, old_word, new_word, new_translation):
     """Функция для редактирования слова и перевода в базе данных для конкретного пользователя."""
-    conn = sqlite3.connect(DATABASE)
-    c = conn.cursor()
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
     # Обновляем слово и перевод, если найдено старое слово для пользователя
-    c.execute("UPDATE words SET word = ?, translation = ? WHERE user_id = ? AND word = ?",
-              (new_word, new_translation, user_id, old_word))
-    changes = c.rowcount
+    cur.execute(
+        "UPDATE words SET word = %s, translation = %s WHERE user_id = %s AND word = %s;",
+        (new_word, new_translation, user_id, old_word)
+    )
+    changes = cur.rowcount
     conn.commit()
+    cur.close()
     conn.close()
     return changes > 0
 
+
 # Initialize database
-init_db()
+# Важно: в реальных условиях инициализация может происходить при запуске или через миграции.
+# Для простоты, мы вызываем её здесь, но это может не подойти для production с высокой нагрузкой.
+try:
+    init_db()
+    logger.info("Database initialized successfully.")
+except Exception as e:
+    logger.error(f"Failed to initialize database: {e}")
+    raise
+
 
 # --- Handlers ---
 @dp.message_handler(commands=["start"])
@@ -128,7 +175,8 @@ async def cmd_list(message: types.Message):
     if words:
         response_lines = ["Ваши последние слова:"]
         for word, translation, date in words:
-            response_lines.append(f"{word} - {translation} (добавлено: {date})")
+            response = date.strftime("%Y-%m-%d %H:%M:%S") if date else "N/A"
+            response_lines.append(f"{word} - {translation} (добавлено: {response})")
         response = "\n".join(response_lines)
     else:
         response = "У вас пока нет сохраненных слов."
@@ -258,7 +306,10 @@ def health():
 
 # Webhook endpoint
 @app.route(f"/bot{BOT_TOKEN}", methods=["POST"])
-def webhook():
+async def webhook():
+    """
+    Асинхронная функция для обработки webhook от Telegram.
+    """
     try:
         # Create an Update object from the request data
         update_data = request.get_json()
@@ -267,12 +318,10 @@ def webhook():
         # Set the current bot instance for aiogram context
         aiogram_Bot.set_current(bot)
 
-        # Process the update
-        # Use asyncio to run the async handler
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(dp.process_update(update))
-        loop.close()
+        # Use the dispatcher's method to process the update.
+        # This is the recommended way when using Dispatcher manually with webhooks in aiogram v2.x
+        # It correctly handles the context internally.
+        await dp.process_update(update)
 
         return {"status": "ok"}, 200
     except Exception as e:
@@ -280,6 +329,6 @@ def webhook():
         return {"error": "Failed to process update"}, 500
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 10000)) # Используем PORT из окружения, как рекомендует Render
     logger.info("Starting Flask on 0.0.0.0:%s", port)
     app.run(host="0.0.0.0", port=port)
