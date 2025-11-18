@@ -306,22 +306,31 @@ def health():
 
 # Webhook endpoint
 @app.route(f"/bot{BOT_TOKEN}", methods=["POST"])
-async def webhook():
+def webhook():
     """
-    Асинхронная функция для обработки webhook от Telegram.
+    Синхронная функция для обработки webhook от Telegram.
+    Использует asyncio.new_event_loop() и устанавливает контекст бота внутри цикла.
     """
     try:
         # Create an Update object from the request data
         update_data = request.get_json()
         update = types.Update(**update_data)
 
-        # Set the current bot instance for aiogram context
-        aiogram_Bot.set_current(bot)
+        # Process the update in a new asyncio event loop
+        # This ensures the aiogram context is handled correctly within the loop
+        async def process_update_async():
+            # Set the current bot instance for aiogram context *inside* the async loop
+            aiogram_Bot.set_current(bot)
+            # Process the update using the dispatcher
+            await dp.process_update(update)
 
-        # Use the dispatcher's method to process the update.
-        # This is the recommended way when using Dispatcher manually with webhooks in aiogram v2.x
-        # It correctly handles the context internally.
-        await dp.process_update(update)
+        # Create a new event loop for this request
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        # Run the async function in the new loop
+        loop.run_until_complete(process_update_async())
+        # Close the loop
+        loop.close()
 
         return {"status": "ok"}, 200
     except Exception as e:
