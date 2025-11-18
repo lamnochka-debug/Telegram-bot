@@ -152,7 +152,7 @@ except Exception as e:
 # --- Handlers ---
 @dp.message_handler(commands=["start"])
 async def cmd_start(message: types.Message):
-    await message.reply("👋 Привет! Бот запущен и работает! Используйте /help для списка команд.")
+    await bot.send_message(message.chat.id, "👋 Привет! Бот запущен и работает! Используйте /help для списка команд.")
 
 @dp.message_handler(commands=["help"])
 async def cmd_help(message: types.Message):
@@ -166,7 +166,7 @@ async def cmd_help(message: types.Message):
 /delete <слово> — удалить слово (пример: /delete apple)
 /edit <старое_слово> ; <новое_слово> ; <новый_перевод> — изменить слово и перевод (пример: /edit aple; apple; яблоко)
     """
-    await message.reply(help_text)
+    await bot.send_message(message.chat.id, help_text)
 
 @dp.message_handler(commands=["list"])
 async def cmd_list(message: types.Message):
@@ -180,13 +180,13 @@ async def cmd_list(message: types.Message):
         response = "\n".join(response_lines)
     else:
         response = "У вас пока нет сохраненных слов."
-    await message.reply(response)
+    await bot.send_message(message.chat.id, response)
 
 @dp.message_handler(commands=["add"])
 async def cmd_add(message: types.Message):
     args = message.get_args()
     if not args or ';' not in args:
-        await message.reply("Неправильный формат. Используйте: /add <слово> ; <перевод>")
+        await bot.send_message(message.chat.id, "Неправильный формат. Используйте: /add <слово> ; <перевод>")
         return
 
     parts = args.split(';', 1)  # Разделить только по первому ';'
@@ -194,23 +194,23 @@ async def cmd_add(message: types.Message):
     translation = parts[1].strip()
 
     if not word or not translation:
-        await message.reply("Слово и перевод не могут быть пустыми.")
+        await bot.send_message(message.chat.id, "Слово и перевод не могут быть пустыми.")
         return
 
     user_id = message.from_user.id
     add_word_to_db(user_id, word, translation)
-    await message.reply(f"Слово '{word}' с переводом '{translation}' добавлено!")
+    await bot.send_message(message.chat.id, f"Слово '{word}' с переводом '{translation}' добавлено!")
 
 @dp.message_handler(commands=["due"])
 async def cmd_due(message: types.Message):
     user_id = message.from_user.id
     count = get_due_count(user_id)
-    await message.reply(f"Количество карточек к повторению: {count}")
+    await bot.send_message(message.chat.id, f"Количество карточек к повторению: {count}")
 
 @dp.message_handler(commands=["quiz"])
 async def cmd_quiz(message: types.Message):
     # Заглушка для функции викторины
-    await message.reply("Функция викторины пока не реализована.")
+    await bot.send_message(message.chat.id, "Функция викторины пока не реализована.")
 
 @dp.message_handler(commands=["export"])
 async def cmd_export(message: types.Message):
@@ -218,7 +218,7 @@ async def cmd_export(message: types.Message):
     words = get_all_words_for_export(user_id)
 
     if not words:
-        await message.reply("Нет слов для экспорта.")
+        await bot.send_message(message.chat.id, "Нет слов для экспорта.")
         return
 
     # Создаем CSV в памяти
@@ -236,29 +236,31 @@ async def cmd_export(message: types.Message):
     csv_bytes = BytesIO(csv_content.encode('utf-8'))
     csv_bytes.name = 'export.csv'
 
-    await message.reply_document(document=types.InputFile(csv_bytes, filename='export.csv'))
-    csv_bytes.close()
+    # Используем send_document для отправки файла
+    document = types.InputFile(csv_bytes, filename='export.csv')
+    await bot.send_document(message.chat.id, document)
+    # Не нужно закрывать BytesIO, aiogram сам это делает
 
 @dp.message_handler(commands=["delete"])
 async def cmd_delete(message: types.Message):
     args = message.get_args()
     if not args:
-        await message.reply("Неправильный формат. Используйте: /delete <слово>")
+        await bot.send_message(message.chat.id, "Неправильный формат. Используйте: /delete <слово>")
         return
 
     word_to_delete = args.strip()
 
     user_id = message.from_user.id
     if delete_word_from_db(user_id, word_to_delete):
-        await message.reply(f"Слово '{word_to_delete}' удалено.")
+        await bot.send_message(message.chat.id, f"Слово '{word_to_delete}' удалено.")
     else:
-        await message.reply(f"Слово '{word_to_delete}' не найдено или не принадлежит вам.")
+        await bot.send_message(message.chat.id, f"Слово '{word_to_delete}' не найдено или не принадлежит вам.")
 
 @dp.message_handler(commands=["edit"])
 async def cmd_edit(message: types.Message):
     args = message.get_args()
     if not args or args.count(';') < 2:
-        await message.reply("Неправильный формат. Используйте: /edit <старое_слово> ; <новое_слово> ; <новый_перевод>")
+        await bot.send_message(message.chat.id, "Неправильный формат. Используйте: /edit <старое_слово> ; <новое_слово> ; <новый_перевод>")
         return
 
     parts = args.split(';', 2)  # Разделить только по первым двум ';'
@@ -267,30 +269,30 @@ async def cmd_edit(message: types.Message):
     new_translation = parts[2].strip()
 
     if not old_word or not new_word or not new_translation:
-        await message.reply("Старое слово, новое слово и новый перевод не могут быть пустыми.")
+        await bot.send_message(message.chat.id, "Старое слово, новое слово и новый перевод не могут быть пустыми.")
         return
 
     user_id = message.from_user.id
     if edit_word_in_db(user_id, old_word, new_word, new_translation):
-        await message.reply(f"Слово '{old_word}' обновлено до '{new_word}' с переводом '{new_translation}'.")
+        await bot.send_message(message.chat.id, f"Слово '{old_word}' обновлено до '{new_word}' с переводом '{new_translation}'.")
     else:
-        await message.reply(f"Старое слово '{old_word}' не найдено или не принадлежит вам.")
+        await bot.send_message(message.chat.id, f"Старое слово '{old_word}' не найдено или не принадлежит вам.")
 
 @dp.message_handler(commands=["echo"])
 async def cmd_echo(message: types.Message):
     # example: /echo hello -> replies "hello"
     text = message.get_args()
     if not text:
-        await message.reply("Usage: /echo <text>")
+        await bot.send_message(message.chat.id, "Usage: /echo <text>")
     else:
-        await message.reply(text)
+        await bot.send_message(message.chat.id, text)
 
 # Debug / catch-all echo handler (remove or modify once all commands are implemented)
 @dp.message_handler()
 async def fallback(message: types.Message):
     # logger.info("Fallback handler got: %s", message.text) # Логирование можно отключить, если оно мешает
     # Убираем echo, чтобы не мешало командам
-    # await message.reply(f"Эхо (debug): {message.text}")
+    # await bot.send_message(message.chat.id, f"Эхо (debug): {message.text}")
     pass # Или добавьте логику для обработки неизвестных команд
 
 # --- Flask app for webhooks ---
